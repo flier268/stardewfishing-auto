@@ -76,6 +76,10 @@ public class FishingScreen extends Screen {
 
     private float partialTick = 0;
 
+    // Auto-fishing feature
+    private boolean autoFishingEnabled = true;
+    private double lastBobberVelocity = 0;
+
     public FishingScreen(S2CStartMinigamePacket packet) {
         super(TITLE);
         this.minigame = new FishingMinigame(this, packet, Objects.requireNonNull(Minecraft.getInstance().player), packet.lineStrength(), packet.barSize());
@@ -206,6 +210,13 @@ public class FishingScreen extends Screen {
 
         if (status != Status.HIT_TEXT) {
             pGuiGraphics.drawString(font, StardewFishing.MOD_NAME, 2, height - 2 - font.lineHeight, 0x6969697F);
+
+            // Display auto-fishing status
+            if (status == Status.MINIGAME) {
+                String autoText = autoFishingEnabled ? "Auto: ON (A)" : "Auto: OFF (A)";
+                int color = autoFishingEnabled ? 0x00FF00FF : 0xFF0000FF;
+                pGuiGraphics.drawString(font, autoText, 2, 2, color);
+            }
         }
     }
 
@@ -238,7 +249,9 @@ public class FishingScreen extends Screen {
                 }
             }
             case MINIGAME -> {
-                minigame.tick(mouseDown);
+                // Auto-fishing: combine manual input with AI decision
+                boolean effectiveMouseDown = mouseDown || shouldAutoClick();
+                minigame.tick(effectiveMouseDown);
 
                 boolean onFish = minigame.isBobberOnFish();
 
@@ -293,7 +306,7 @@ public class FishingScreen extends Screen {
                 if (creakSoundTimer > 0) {
                     creakSoundTimer--;
                 }
-                if (mouseDown && creakSoundTimer == 0) {
+                if (effectiveMouseDown && creakSoundTimer == 0) {
                     creakSoundTimer = CREAK_LENGTH;
                     playSound(SFSoundEvents.REEL_CREAK.get());
                 }
@@ -350,6 +363,17 @@ public class FishingScreen extends Screen {
     }
 
     @Override
+    public boolean keyPressed(int pKeyCode, int pScanCode, int pModifiers) {
+        // Toggle auto-fishing with 'A' key
+        if (pKeyCode == GLFW.GLFW_KEY_A && status == Status.MINIGAME) {
+            autoFishingEnabled = !autoFishingEnabled;
+            playSound(autoFishingEnabled ? SFSoundEvents.COMPLETE.get() : SFSoundEvents.DWOP.get());
+            return true;
+        }
+        return super.keyPressed(pKeyCode, pScanCode, pModifiers);
+    }
+
+    @Override
     public void onClose() {
         super.onClose();
         SFNetworking.sendToServer(new C2SCompleteMinigamePacket(status == Status.SUCCESS || status == Status.CHEST_OPENING, accuracy, gotChest));
@@ -399,6 +423,76 @@ public class FishingScreen extends Screen {
 
         minecraft.getSoundManager().stop(SFSoundEvents.REEL_FAST.getId(), null);
         minecraft.getSoundManager().stop(SFSoundEvents.REEL_SLOW.getId(), null);
+    }
+
+    /**
+     * Auto-fishing AI logic
+     * Returns true if the bobber should be moved up (click), false otherwise
+     */
+    private boolean shouldAutoClick() {
+        if (!autoFishingEnabled) {
+            return false;
+        }
+
+        double bobberPos = minigame.getBobberPos();
+        double fishPos = minigame.getFishPos();
+        int barSize = minigame.getBarSize();
+
+        // Calculate bobber bar center and range
+        double bobberCenter = bobberPos + (barSize / 2.0);
+        double bobberMin = bobberPos - 2;
+        double bobberMax = bobberPos + barSize - 12;
+
+        // If chest is visible and we can catch it, prioritize it
+        if (minigame.isChestVisible() && !minigame.gotChest()) {
+            int chestPos = minigame.getChestPos();
+
+            // If we're already on the fish, also try to get the chest
+            if (minigame.isBobberOnFish()) {
+                double chestCenter = chestPos;
+                double distanceToChest = chestCenter - bobberCenter;
+
+                // Try to catch both fish and chest
+                if (Math.abs(distanceToChest) < barSize / 2.0) {
+                    return chestCenter > bobberCenter;
+                }
+            }
+        }
+
+        // Calculate current velocity estimate
+        double velocityEstimate = bobberPos - lastBobberVelocity;
+        lastBobberVelocity = bobberPos;
+
+        // Predictive control: estimate where bobber will be in next few ticks
+        double predictedBobberPos = bobberPos + velocityEstimate * 2;
+
+        // If fish is above the predicted bobber position, click to go up
+        if (fishPos > predictedBobberPos + barSize / 2.0) {
+            return true;
+        }
+
+        // If fish is below the predicted bobber position, don't click to go down
+        if (fishPos < predictedBobberPos - barSize / 2.0) {
+            return false;
+        }
+
+        // If we're close to the fish, use fine control
+        // Keep the fish in the center of the bobber bar
+        double distanceFromCenter = fishPos - bobberCenter;
+
+        // Small dead zone to prevent jittering
+        double deadZone = barSize * 0.15;
+
+        if (distanceFromCenter > deadZone) {
+            // Fish is above center, need to go up
+            return true;
+        } else if (distanceFromCenter < -deadZone) {
+            // Fish is below center, need to go down
+            return false;
+        }
+
+        // In dead zone, maintain current state based on whether we're on the fish
+        return minigame.isBobberOnFish() && fishPos > bobberCenter;
     }
 
     public enum Status {
