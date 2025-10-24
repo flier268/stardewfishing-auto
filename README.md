@@ -25,6 +25,30 @@ This mod was developed by the wonderful [bonker](https://modrinth.com/user/bonke
 
  
 
+## 🤖 Auto-Fishing Feature 🤖
+
+**This mod includes an experimental AI-powered auto-fishing feature!**
+
+### How to Use:
+- When the fishing minigame starts, auto-fishing is **enabled by default**
+- Press the **`A` key** during the minigame to toggle auto-fishing ON/OFF
+- The current status is displayed in the top-left corner:
+  - **"Auto: ON (A)"** (green) - AI is controlling the bobber
+  - **"Auto: OFF (A)"** (red) - Manual control required
+
+### How It Works:
+- The AI uses predictive control algorithms to keep the bobber on the fish
+- It automatically adjusts for fish movement patterns and bobber velocity
+- The AI can even catch treasure chests while keeping the fish in range
+- Uses dead zone calculations to prevent jittering and ensure smooth control
+
+### Notes:
+- You can still manually click/hold to override the AI at any time
+- The AI adapts to different fish difficulties and bar sizes
+- Perfect for AFK fishing or learning the minigame mechanics!
+
+
+
 ## ❓ FAQ❓
 
 **Q: How can I change how hard it is to catch specific fish?**
@@ -54,6 +78,14 @@ A: Leave a comment and hopefully we can fix it!
 **Q: Will this mod be updated to 1.xx / Fabric?**
 
 A: Not unless you have the money to pay my developer for it, because I sure don't :)
+
+**Q: How does the auto-fishing feature work?**
+
+A: The auto-fishing AI uses predictive control algorithms to automatically keep the bobber on the fish. Press the `A` key during the minigame to toggle it on/off. See the [technical documentation](AUTOFISH.md) for implementation details.
+
+**Q: Is auto-fishing cheating?**
+
+A: The auto-fishing feature is designed as an accessibility and learning tool. It uses the same mechanics available to manual players and doesn't guarantee perfect catches - difficult fish can still escape!
 
  
 
