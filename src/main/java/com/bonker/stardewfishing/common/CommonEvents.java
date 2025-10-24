@@ -3,10 +3,8 @@ package com.bonker.stardewfishing.common;
 import com.bonker.stardewfishing.SFConfig;
 import com.bonker.stardewfishing.StardewFishing;
 import com.bonker.stardewfishing.client.RodTooltipHandler;
-import com.bonker.stardewfishing.client.SparkleParticle;
 import com.bonker.stardewfishing.common.init.SFAttributes;
 import com.bonker.stardewfishing.common.init.SFItems;
-import com.bonker.stardewfishing.common.init.SFParticles;
 import com.bonker.stardewfishing.common.networking.SFNetworking;
 import com.bonker.stardewfishing.proxy.ClientProxy;
 import com.bonker.stardewfishing.proxy.ItemUtils;
@@ -20,7 +18,6 @@ import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.projectile.FishingHook;
 import net.minecraft.world.inventory.ClickAction;
 import net.minecraft.world.item.ItemStack;
-import net.minecraftforge.client.event.RegisterParticleProvidersEvent;
 import net.minecraftforge.event.AddReloadListenerEvent;
 import net.minecraftforge.event.AttachCapabilitiesEvent;
 import net.minecraftforge.event.ItemStackedOnOtherEvent;
@@ -69,21 +66,33 @@ public class CommonEvents {
             ItemStack carried = event.getStackedOnItem();
             ItemStack currentBobber = ItemUtils.getBobber(slotItem);
 
+            boolean equipped = true;
             if (ItemUtils.isBobber(carried)) {
-                ItemUtils.setBobber(slotItem, carried.copy());
-                event.getCarriedSlotAccess().set(currentBobber.copy());
-                event.setCanceled(true);
-
-                if (event.getPlayer().level().isClientSide && FMLEnvironment.dist.isClient()) {
-                    RodTooltipHandler.addShake(event.getSlot(), true);
+                if (currentBobber.isEmpty()) {
+                    ItemUtils.setBobber(slotItem, carried.copyWithCount(1));
+                    event.getCarriedSlotAccess().get().shrink(1);
+                    event.setCanceled(true);
+                } else if (carried.getCount() == 1) {
+                    ItemUtils.setBobber(slotItem, carried.copyWithCount(1));
+                    event.getCarriedSlotAccess().set(currentBobber.copy());
+                    event.setCanceled(true);
+                } else if (ItemStack.isSameItemSameTags(carried, currentBobber)) {
+                    int transferAmount = Math.min(carried.getMaxStackSize() - carried.getCount(), currentBobber.getCount());
+                    ItemUtils.setBobber(slotItem, currentBobber.copyWithCount(currentBobber.getCount() - transferAmount));
+                    event.getCarriedSlotAccess().get().grow(transferAmount);
+                    event.setCanceled(true);
+                    equipped = false;
                 }
             } else if (!currentBobber.isEmpty() && carried.isEmpty()) {
                 ItemUtils.setBobber(slotItem, ItemStack.EMPTY);
                 event.getCarriedSlotAccess().set(currentBobber.copy());
                 event.setCanceled(true);
+                equipped = false;
+            }
 
+            if (event.isCanceled()) {
                 if (event.getPlayer().level().isClientSide && FMLEnvironment.dist.isClient()) {
-                    RodTooltipHandler.addShake(event.getSlot(), false);
+                    RodTooltipHandler.addShake(event.getSlot(), equipped);
                 }
             }
         }
@@ -145,11 +154,6 @@ public class CommonEvents {
         @SubscribeEvent
         public static void onCommonSetup(final FMLCommonSetupEvent event) {
             SFNetworking.register();
-        }
-
-        @SubscribeEvent
-        public static void onParticleRegistration(final RegisterParticleProvidersEvent event) {
-            event.registerSpriteSet(SFParticles.SPARKLE.get(), SparkleParticle.Provider::new);
         }
 
         @SubscribeEvent
