@@ -74,6 +74,9 @@ public class MinigameModifiersReloadListener extends SimplePreparableReloadListe
     }
 
     public static Optional<MinigameModifiers> getModifiers(ItemStack stack) {
+        if (INSTANCE == null) {
+            return Optional.empty();
+        }
         if (INSTANCE.modifiers.containsKey(stack.getItem())) {
             return Optional.of(INSTANCE.modifiers.get(stack.getItem()));
         }
