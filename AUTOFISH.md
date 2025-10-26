@@ -54,8 +54,8 @@ The AI decides whether to click based on:
    - Maintains fish near center of bobber bar
    - Uses dead zone to prevent oscillation
 
-##### Enhanced Treasure Chest Strategy with Velocity Prediction
-The AI now uses an intelligent velocity-aware system for chest pursuit:
+##### Enhanced Treasure Chest Strategy with Velocity Prediction (Unlimited Range)
+The AI now uses an intelligent velocity-aware system for chest pursuit with NO distance limits:
 
 **Velocity-Based Prediction**:
 - Reads bobber and fish velocity from game state
@@ -81,39 +81,50 @@ The AI now uses an intelligent velocity-aware system for chest pursuit:
 **Priority Levels** (evaluated in order):
 1. **Finish chest if nearly caught** (>70% chest progress)
    - Completes chest capture to avoid losing progress
+   - **NO DISTANCE LIMIT** - goes for chest anywhere
 
 2. **Trajectory-based dual capture** (NEW)
    - If predicted path covers both fish and chest simultaneously
-   - Requires fish progress >40% for safety
+   - Requires fish progress >30% for safety
    - Most efficient capture method
+   - **NO DISTANCE LIMIT**
 
 3. **Aggressive pursuit at high fish progress** (>70%)
-   - Uses predicted distance instead of current distance
-   - Range: up to 1.5x bar size (predicted position)
+   - **NO DISTANCE LIMIT** - chases chest anywhere if fish is safe
+   - Only blocked if fish moving extremely fast away (velocity > 4.0)
 
-4. **Velocity-aware dual capture**
-   - When on fish and moving towards chest
-   - Checks bobber velocity direction matches chest direction
-   - More aggressive (1.2x bar size) when moving correctly
+4. **On-fish dual capture** (fish progress >40%)
+   - When already on the fish
+   - **NO DISTANCE LIMIT** - goes for chest anywhere
 
 5. **Maintain chest progress** (>30%)
-   - Uses prediction to avoid overshooting
-   - Range: predicted distance < bar size
+   - Prevents losing partial chest progress
+   - **NO DISTANCE LIMIT**
 
-6. **Idle fish exploitation** (NEW)
-   - When fish velocity < 0.5 and fish progress >50%
-   - Safer to chase chest when fish isn't moving
-   - Requires predicted fish distance < bar size
+6. **Idle fish exploitation** (fish velocity < 0.5, progress >50%)
+   - **NO DISTANCE LIMIT** - chases chest anywhere when fish is idle
 
-**Safety Thresholds**:
-- **Predicted distance < 50% bar size**: Always safe to chase
-- **Fish idle (velocity < 0.3)**: Very safe, increased range
-- **Fish progress >80%**: Chase up to 2.0x bar size
-  - UNLESS fish moving fast away (velocity > 3.0)
-- **Fish progress >60%**: Chase up to 1.5x bar size
-  - UNLESS fish moving away rapidly (velocity > 2.0 in wrong direction)
-- **Fish moving away fast**: More conservative, may reject chase
-- **Conservative default**: chest ≤ 1.2x fish distance AND predicted fish distance < 1.5x bar size
+7. **Medium progress aggressive chase** (>50%)
+   - Chases chest if predicted fish position is safe
+   - Requires predicted fish distance < 1.2x bar size
+
+**Safety Thresholds** (Fish-Centric, NOT Distance-Limited):
+- **Core Principle**: Evaluate if FISH is safe, not if CHEST is close
+- **Fish close** (distance < 40% bar): Always safe - chase chest anywhere
+- **Fish predicted close** (predicted < 60% bar): Always safe - chase chest anywhere
+- **Fish idle** (velocity < 0.3): Always safe - chase chest anywhere
+- **Fish slow** (velocity < 0.8, distance < 1.2x bar): Safe - chase chest anywhere
+- **Fish progress >80%**: Chase chest anywhere
+  - ONLY reject if fish velocity > 4.0 AND predicted distance > 1.5x bar
+- **Fish progress >70%**: Chase chest anywhere
+  - ONLY reject if fish moving away fast (velocity > 3.0) AND predicted distance > 1.2x bar
+- **Fish progress >60%**: Chase chest anywhere
+  - ONLY reject if fish moving away rapidly (velocity > 2.5) AND predicted distance > bar size
+- **Fish progress >50%**: Chase if fish not moving away (velocity < 2.0 in wrong direction)
+- **Fish progress >30%**: Need fish close or predicted close
+- **Fish progress <30%**: Very conservative - need fish very close
+
+**Key Change**: Removed all hard chest distance limits. AI now focuses purely on "will the fish escape?" rather than "is the chest too far?"
 
 ### Integration with Manual Control
 
