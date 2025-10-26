@@ -148,7 +148,7 @@ repositories {
         url "https://girafi.dk/maven/"
     }
 
-    // for mod jars
+    // for mod jars from libs folder
     flatDir {
         dir 'libs'
     }
@@ -174,6 +174,54 @@ repositories {
     maven { url "https://maven.shedaniel.me/" }
 }
 
+// Task to download mod dependencies from Modrinth CDN
+task downloadModrinthDeps {
+    description = 'Downloads mod dependencies from Modrinth CDN'
+    group = 'build setup'
+
+    doLast {
+        def libsDir = file('libs')
+        libsDir.mkdirs()
+
+        def deps = [
+            [
+                name: 'netherdepthsupgrade-3.1.5-1.20.jar',
+                url: 'https://cdn.modrinth.com/data/vI1QKJro/versions/BFX1CDJ6/netherdepthsupgrade-3.1.5-1.20.jar'
+            ],
+            [
+                name: 'quality_food-1.20.1-1.7.3-all.jar',
+                url: 'https://cdn.modrinth.com/data/Ahdn1OE0/versions/pQhfbSYE/quality_food-1.20.1-1.7.3-all.jar'
+            ],
+            [
+                name: 'tide-forge-1.20.1-1.6.2.jar',
+                url: 'https://cdn.modrinth.com/data/die1AF7i/versions/goZrOUGi/tide-forge-1.20.1-1.6.2.jar'
+            ]
+        ]
+
+        deps.each { dep ->
+            def destFile = file("libs/${dep.name}")
+            if (!destFile.exists() || destFile.length() < 1000) {
+                println "Downloading ${dep.name} from Modrinth..."
+                try {
+                    ant.get(src: dep.url, dest: destFile, verbose: true, usetimestamp: true)
+                    println "✓ Downloaded ${dep.name} (${destFile.length()} bytes)"
+                } catch (Exception e) {
+                    println "✗ Failed to download ${dep.name}: ${e.message}"
+                    throw e
+                }
+            } else {
+                println "✓ ${dep.name} already exists (${destFile.length()} bytes)"
+            }
+        }
+    }
+}
+
+// Make compilation depend on downloadModrinthDeps
+tasks.named('compileJava').configure {
+    dependsOn downloadModrinthDeps
+}
+
+
 dependencies {
     // Specify the version of Minecraft to use.
     minecraft "net.minecraftforge:forge:${minecraft_version}-${forge_version}"
@@ -181,18 +229,20 @@ dependencies {
     // aquaculture 2
     compileOnly fg.deobf("com.teammetallurgy.aquaculture:aquaculture2_${minecraft_version}:${minecraft_version}-2.5.2")
 
-    // nether depths
-    compileOnly fg.deobf("blank:netherdepthsupgrade-3.1.5:1.20")
+    // nether depths - downloaded from Modrinth CDN (runtime only, production jar)
+    runtimeOnly files('libs/netherdepthsupgrade-3.1.5-1.20.jar')
 
     // geckolib (for nether depths)
     //runtimeOnly fg.deobf("software.bernie.geckolib:geckolib-forge-${minecraft_version}:4.4.6")
     //runtimeOnly("com.eliotlash.mclib:mclib:20")
 
-    // quality food
-    implementation fg.deobf("blank:quality_food-1.20.1:1.7.3-all")
+    // quality food - downloaded from Modrinth CDN (compile and runtime, production jar)
+    compileOnly files('libs/quality_food-1.20.1-1.7.3-all.jar')
+    runtimeOnly files('libs/quality_food-1.20.1-1.7.3-all.jar')
 
-    // tide
-    implementation fg.deobf("blank:tide-forge-1.20.1:1.6.2")
+    // tide - downloaded from Modrinth CDN (compile and runtime, production jar)
+    compileOnly files('libs/tide-forge-1.20.1-1.6.2.jar')
+    runtimeOnly files('libs/tide-forge-1.20.1-1.6.2.jar')
 
     // cloth config (for tide)
     runtimeOnly(fg.deobf("me.shedaniel.cloth:cloth-config-forge:11.1.136"))
