@@ -443,17 +443,72 @@ public class FishingScreen extends Screen {
         double bobberMin = bobberPos - 2;
         double bobberMax = bobberPos + barSize - 12;
 
-        // If chest is visible and we can catch it, prioritize it
+        // Enhanced treasure chest pursuit strategy with velocity prediction
         if (minigame.isChestVisible() && !minigame.gotChest()) {
             int chestPos = minigame.getChestPos();
+            double chestCenter = chestPos;
+            float fishProgress = minigame.getProgress();
+            float chestProgress = minigame.getChestProgress();
 
-            // If we're already on the fish, also try to get the chest
-            if (minigame.isBobberOnFish()) {
-                double chestCenter = chestPos;
-                double distanceToChest = chestCenter - bobberCenter;
+            // Get velocity information for predictive control
+            double bobberVelocity = minigame.getBobberVelocity();
+            double fishVelocity = minigame.getFishVelocity();
 
-                // Try to catch both fish and chest
-                if (Math.abs(distanceToChest) < barSize / 2.0) {
+            // Predict future positions (2-3 ticks ahead)
+            double predictedBobberCenter = bobberCenter + bobberVelocity * 2.5;
+            double predictedFishPos = fishPos + fishVelocity * 2.5;
+
+            // Calculate current and predicted distances
+            double distanceToChest = Math.abs(chestCenter - bobberCenter);
+            double distanceToFish = Math.abs(fishPos - bobberCenter);
+            double predictedDistToFish = Math.abs(predictedFishPos - predictedBobberCenter);
+            double predictedDistToChest = Math.abs(chestCenter - predictedBobberCenter);
+
+            // Check if we can cover both fish and chest in predicted trajectory
+            boolean canCoverBoth = canCoverBothTargets(predictedBobberCenter, predictedFishPos,
+                                                        chestCenter, barSize, bobberVelocity);
+
+            // Safety check: can we safely go for the chest?
+            boolean safeToChase = isSafeToChaseChest(bobberCenter, fishPos, chestCenter,
+                                                      barSize, fishProgress, distanceToFish, distanceToChest,
+                                                      predictedDistToFish, fishVelocity);
+
+            if (safeToChase) {
+                // Priority 1: If chest is almost caught (>70%), finish it
+                if (chestProgress > 0.7f) {
+                    return chestCenter > bobberCenter;
+                }
+
+                // Priority 2: If we can cover both targets in our movement trajectory
+                if (canCoverBoth && fishProgress > 0.4f) {
+                    return chestCenter > bobberCenter;
+                }
+
+                // Priority 3: If fish progress is very high (>70%), aggressively pursue chest
+                // Use predicted distance for better accuracy
+                if (fishProgress > 0.7f && predictedDistToChest < barSize * 1.5) {
+                    return chestCenter > bobberCenter;
+                }
+
+                // Priority 4: If we're on the fish with favorable velocity, try to catch both
+                if (minigame.isBobberOnFish() && distanceToChest < barSize * 1.2) {
+                    // Consider velocity: if moving towards chest, more aggressive
+                    boolean movingTowardsChest = (chestCenter > bobberCenter && bobberVelocity > 0) ||
+                                                  (chestCenter < bobberCenter && bobberVelocity < 0);
+                    if (movingTowardsChest || distanceToChest < barSize * 0.8) {
+                        return chestCenter > bobberCenter;
+                    }
+                }
+
+                // Priority 5: If chest has some progress (>30%), try to maintain it
+                // Factor in velocity to avoid overshooting
+                if (chestProgress > 0.3f && predictedDistToChest < barSize) {
+                    return chestCenter > bobberCenter;
+                }
+
+                // Priority 6: If fish is idle or moving slowly, safer to chase chest
+                if (Math.abs(fishVelocity) < 0.5 && fishProgress > 0.5f &&
+                    distanceToChest < barSize * 0.8 && predictedDistToFish < barSize) {
                     return chestCenter > bobberCenter;
                 }
             }
@@ -493,6 +548,103 @@ public class FishingScreen extends Screen {
 
         // In dead zone, maintain current state based on whether we're on the fish
         return minigame.isBobberOnFish() && fishPos > bobberCenter;
+    }
+
+    /**
+     * Determines if the bobber can cover both fish and chest in its movement trajectory
+     *
+     * @param predictedBobberCenter Predicted center position of the bobber
+     * @param predictedFishPos Predicted position of the fish
+     * @param chestCenter Position of the treasure chest (stationary)
+     * @param barSize Size of the bobber bar
+     * @param bobberVelocity Current velocity of the bobber
+     * @return true if both targets can be covered
+     */
+    private boolean canCoverBothTargets(double predictedBobberCenter, double predictedFishPos,
+                                         double chestCenter, int barSize, double bobberVelocity) {
+        // Calculate if predicted bobber position can cover both targets
+        double predictedMin = predictedBobberCenter - (barSize / 2.0);
+        double predictedMax = predictedBobberCenter + (barSize / 2.0);
+
+        // Check if fish will be in range
+        boolean fishInRange = predictedFishPos >= predictedMin && predictedFishPos <= predictedMax;
+
+        // Check if chest will be in range
+        boolean chestInRange = chestCenter >= predictedMin && chestCenter <= predictedMax;
+
+        // Both must be in range, and we need some velocity to reach them
+        return fishInRange && chestInRange && Math.abs(bobberVelocity) > 0.1;
+    }
+
+    /**
+     * Determines if it's safe to chase the treasure chest without losing the fish
+     * Enhanced with velocity-based prediction
+     *
+     * @param bobberCenter Current center position of the bobber
+     * @param fishPos Current position of the fish
+     * @param chestCenter Position of the treasure chest
+     * @param barSize Size of the bobber bar
+     * @param fishProgress Current progress on catching the fish (0.0-1.0)
+     * @param distanceToFish Current distance from bobber center to fish
+     * @param distanceToChest Current distance from bobber center to chest
+     * @param predictedDistToFish Predicted distance from bobber to fish in next few ticks
+     * @param fishVelocity Current velocity of the fish
+     * @return true if it's safe to pursue the chest
+     */
+    private boolean isSafeToChaseChest(double bobberCenter, double fishPos, double chestCenter,
+                                        int barSize, float fishProgress,
+                                        double distanceToFish, double distanceToChest,
+                                        double predictedDistToFish, double fishVelocity) {
+        // If we're already very close to the fish, it's safe to try for nearby chests
+        if (distanceToFish < barSize * 0.3) {
+            return true;
+        }
+
+        // If predicted distance shows we'll still be close to fish, safer to chase
+        if (predictedDistToFish < barSize * 0.5) {
+            return true;
+        }
+
+        // If fish is moving slowly or idle, safer to chase chest
+        if (Math.abs(fishVelocity) < 0.3 && distanceToFish < barSize * 0.8) {
+            return true;
+        }
+
+        // If fish progress is very high (>80%), we can take more risks
+        // The fish won't escape easily at this point
+        if (fishProgress > 0.8f) {
+            // But be more conservative if fish is moving fast away from us
+            if (Math.abs(fishVelocity) > 3.0 && predictedDistToFish > barSize) {
+                return false;
+            }
+            return distanceToChest < barSize * 2.0;
+        }
+
+        // If fish progress is high (>60%), moderate risk acceptable
+        if (fishProgress > 0.6f) {
+            // Check if fish is moving away rapidly
+            boolean fishMovingAway = (fishVelocity > 2.0 && fishPos > bobberCenter) ||
+                                      (fishVelocity < -2.0 && fishPos < bobberCenter);
+            if (fishMovingAway && predictedDistToFish > barSize * 0.8) {
+                return false;
+            }
+            return distanceToChest < barSize * 1.5;
+        }
+
+        // If fish is close and chest is far, not safe - prioritize fish
+        if (distanceToFish < barSize * 0.5 && distanceToChest > barSize * 1.2) {
+            return false;
+        }
+
+        // If both fish and chest are reasonably close in predicted positions
+        if (predictedDistToFish < barSize && distanceToChest < barSize) {
+            return true;
+        }
+
+        // Conservative approach: only chase if chest is closer or similar distance to fish
+        // Allow 20% margin (chest can be 20% farther than fish)
+        // But factor in predicted distance too
+        return distanceToChest <= distanceToFish * 1.2 && predictedDistToFish < barSize * 1.5;
     }
 
     public enum Status {

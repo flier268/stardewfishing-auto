@@ -263,4 +263,12 @@ public class FishingMinigame {
     public int getBarSize() {
         return barSize;
     }
+
+    public double getBobberVelocity() {
+        return bobberVelocity;
+    }
+
+    public double getFishVelocity() {
+        return fishVelocity;
+    }
 }

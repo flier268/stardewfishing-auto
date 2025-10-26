@@ -54,15 +54,66 @@ The AI decides whether to click based on:
    - Maintains fish near center of bobber bar
    - Uses dead zone to prevent oscillation
 
-##### Treasure Chest Priority
-```java
-if (minigame.isChestVisible() && !minigame.gotChest()) {
-    // Special logic to catch both fish and chest
-}
-```
-- When a treasure chest appears, AI attempts to catch it
-- Only tries if already on the fish (maintains primary objective)
-- Balances between fish tracking and chest collection
+##### Enhanced Treasure Chest Strategy with Velocity Prediction
+The AI now uses an intelligent velocity-aware system for chest pursuit:
+
+**Velocity-Based Prediction**:
+- Reads bobber and fish velocity from game state
+- Predicts positions 2.5 ticks ahead using physics simulation
+- Considers movement trajectories, not just current positions
+- Evaluates if bobber can cover both targets in its path
+
+**Trajectory Analysis** (`canCoverBothTargets` helper method):
+- Simulates bobber movement over next few ticks
+- Checks if predicted bobber bar will overlap both fish and chest
+- Requires active velocity (bobber must be moving)
+- Enables opportunistic dual-capture in single movement
+
+**Safety Evaluation** (`isSafeToChaseChest` helper method):
+- Assesses whether chasing the chest risks losing the fish
+- **NEW**: Uses predicted distances instead of just current distances
+- **NEW**: Detects if fish is moving away rapidly (velocity > 2-3)
+- **NEW**: More conservative when fish has high escape velocity
+- **NEW**: More aggressive when fish is idle or slow (velocity < 0.3-0.5)
+- Considers fish progress as risk tolerance (higher progress = more aggressive)
+- Dynamic risk thresholds based on game state and motion
+
+**Priority Levels** (evaluated in order):
+1. **Finish chest if nearly caught** (>70% chest progress)
+   - Completes chest capture to avoid losing progress
+
+2. **Trajectory-based dual capture** (NEW)
+   - If predicted path covers both fish and chest simultaneously
+   - Requires fish progress >40% for safety
+   - Most efficient capture method
+
+3. **Aggressive pursuit at high fish progress** (>70%)
+   - Uses predicted distance instead of current distance
+   - Range: up to 1.5x bar size (predicted position)
+
+4. **Velocity-aware dual capture**
+   - When on fish and moving towards chest
+   - Checks bobber velocity direction matches chest direction
+   - More aggressive (1.2x bar size) when moving correctly
+
+5. **Maintain chest progress** (>30%)
+   - Uses prediction to avoid overshooting
+   - Range: predicted distance < bar size
+
+6. **Idle fish exploitation** (NEW)
+   - When fish velocity < 0.5 and fish progress >50%
+   - Safer to chase chest when fish isn't moving
+   - Requires predicted fish distance < bar size
+
+**Safety Thresholds**:
+- **Predicted distance < 50% bar size**: Always safe to chase
+- **Fish idle (velocity < 0.3)**: Very safe, increased range
+- **Fish progress >80%**: Chase up to 2.0x bar size
+  - UNLESS fish moving fast away (velocity > 3.0)
+- **Fish progress >60%**: Chase up to 1.5x bar size
+  - UNLESS fish moving away rapidly (velocity > 2.0 in wrong direction)
+- **Fish moving away fast**: More conservative, may reject chase
+- **Conservative default**: chest ≤ 1.2x fish distance AND predicted fish distance < 1.5x bar size
 
 ### Integration with Manual Control
 
@@ -155,7 +206,11 @@ To test the auto-fishing feature:
 
 ## Code References
 
-- Main implementation: `FishingScreen.java:432-496`
+- Main implementation: `FishingScreen.java:432-551`
+- Velocity-aware chest strategy: `FishingScreen.java:446-515`
+- Trajectory analysis helper: `FishingScreen.java:553-577`
+- Enhanced safety evaluation: `FishingScreen.java:579-648`
+- Velocity getters: `FishingMinigame.java:267-273`
 - Toggle handler: `FishingScreen.java:367-374`
 - UI display: `FishingScreen.java:214-220`
 - Integration point: `FishingScreen.java:253`
