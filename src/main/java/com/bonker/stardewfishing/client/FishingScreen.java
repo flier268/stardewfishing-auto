@@ -80,6 +80,16 @@ public class FishingScreen extends Screen {
     private boolean autoFishingEnabled = true;
     private double lastBobberVelocity = 0;
 
+    // Strategy state machine to prevent oscillation
+    private enum Strategy {
+        FOLLOW_FISH,    // Primary: keep bobber on fish
+        PURSUE_CHEST    // Secondary: go for treasure chest
+    }
+    private Strategy currentStrategy = Strategy.FOLLOW_FISH;
+    private int strategyCommitmentTicks = 0; // Remaining ticks committed to current strategy
+    private static final int MIN_STRATEGY_COMMITMENT = 10; // Minimum ticks before strategy change (0.5 sec)
+    private float lastFishProgress = 0.0f;
+
     public FishingScreen(S2CStartMinigamePacket packet) {
         super(TITLE);
         this.minigame = new FishingMinigame(this, packet, Objects.requireNonNull(Minecraft.getInstance().player), packet.lineStrength(), packet.barSize());
@@ -426,7 +436,7 @@ public class FishingScreen extends Screen {
     }
 
     /**
-     * Auto-fishing AI logic
+     * Auto-fishing AI logic with state commitment to prevent oscillation
      * Returns true if the bobber should be moved up (click), false otherwise
      */
     private boolean shouldAutoClick() {
@@ -437,88 +447,301 @@ public class FishingScreen extends Screen {
         double bobberPos = minigame.getBobberPos();
         double fishPos = minigame.getFishPos();
         int barSize = minigame.getBarSize();
+        float fishProgress = minigame.getProgress();
 
         // Calculate bobber bar center and range
         double bobberCenter = bobberPos + (barSize / 2.0);
-        double bobberMin = bobberPos - 2;
-        double bobberMax = bobberPos + barSize - 12;
 
-        // Enhanced treasure chest pursuit strategy with velocity prediction
-        if (minigame.isChestVisible() && !minigame.gotChest()) {
-            int chestPos = minigame.getChestPos();
-            double chestCenter = chestPos;
-            float fishProgress = minigame.getProgress();
-            float chestProgress = minigame.getChestProgress();
+        // Track fish progress change rate (for emergency abort)
+        float progressChange = fishProgress - lastFishProgress;
+        lastFishProgress = fishProgress;
 
-            // Get velocity information for predictive control
-            double bobberVelocity = minigame.getBobberVelocity();
-            double fishVelocity = minigame.getFishVelocity();
+        // Decrement commitment timer
+        if (strategyCommitmentTicks > 0) {
+            strategyCommitmentTicks--;
+        }
 
-            // Predict future positions (2-3 ticks ahead)
-            double predictedBobberCenter = bobberCenter + bobberVelocity * 2.5;
-            double predictedFishPos = fishPos + fishVelocity * 2.5;
+        // EMERGENCY ABORT CONDITIONS for chest pursuit
+        // Only abort in truly critical situations to avoid over-conservative behavior
+        if (currentStrategy == Strategy.PURSUE_CHEST) {
+            boolean shouldAbort = false;
+            String abortReason = "";
 
-            // Calculate current and predicted distances
-            double distanceToChest = Math.abs(chestCenter - bobberCenter);
-            double distanceToFish = Math.abs(fishPos - bobberCenter);
-            double predictedDistToFish = Math.abs(predictedFishPos - predictedBobberCenter);
-            double predictedDistToChest = Math.abs(chestCenter - predictedBobberCenter);
+            // Emergency 1: Fish progress dropping VERY rapidly (catastrophic)
+            if (progressChange < -0.025f) {
+                shouldAbort = true;
+                abortReason = String.format("catastrophic progress drop: %.3f", progressChange);
+            }
 
-            // Check if we can cover both fish and chest in predicted trajectory
-            boolean canCoverBoth = canCoverBothTargets(predictedBobberCenter, predictedFishPos,
-                                                        chestCenter, barSize, bobberVelocity);
+            // Emergency 2: Fish progress critically low (about to fail)
+            if (fishProgress < 0.15f) {
+                shouldAbort = true;
+                abortReason = String.format("critical fish progress: %.2f", fishProgress);
+            }
 
-            // Safety check: can we safely go for the chest?
-            boolean safeToChase = isSafeToChaseChest(bobberCenter, fishPos, chestCenter,
-                                                      barSize, fishProgress, distanceToFish, distanceToChest,
-                                                      predictedDistToFish, fishVelocity);
+            // Emergency 3: Low progress AND dropping rapidly
+            if (fishProgress < 0.3f && progressChange < -0.02f) {
+                shouldAbort = true;
+                abortReason = String.format("low progress + rapid drop: %.2f / %.3f", fishProgress, progressChange);
+            }
 
-            if (safeToChase) {
-                // Priority 1: If chest is almost caught (>70%), finish it
-                // Go for it regardless of distance
-                if (chestProgress > 0.7f) {
-                    return chestCenter > bobberCenter;
+            // Emergency 4: Chest extremely far and progress declining significantly
+            if (minigame.isChestVisible()) {
+                int chestPos = minigame.getChestPos();
+                double distanceToChest = Math.abs(chestPos - bobberCenter);
+                float chestProgress = minigame.getChestProgress();
+
+                // Only abort for extreme distance if: far + low chest progress + declining fish
+                if (distanceToChest > 70 && chestProgress < 0.3f &&
+                    progressChange < -0.015f && fishProgress < 0.5f) {
+                    shouldAbort = true;
+                    abortReason = String.format("extreme distance + bad conditions: %.1f pixels", distanceToChest);
                 }
+            }
 
-                // Priority 2: If we can cover both targets in our movement trajectory
-                // This is the most efficient - capture both in one movement
-                if (canCoverBoth && fishProgress > 0.3f) {
-                    return chestCenter > bobberCenter;
+            if (shouldAbort) {
+                if (SFConfig.isDebugMode()) {
+                    StardewFishing.LOGGER.info("[AUTO] EMERGENCY ABORT! Reason: {}", abortReason);
                 }
+                currentStrategy = Strategy.FOLLOW_FISH;
+                strategyCommitmentTicks = MIN_STRATEGY_COMMITMENT;
+            }
+        }
 
-                // Priority 3: If fish progress is very high (>70%), aggressively pursue chest
-                // No distance limit - as long as fish is safe, go for the chest
-                if (fishProgress > 0.7f) {
-                    return chestCenter > bobberCenter;
+        // Decide strategy (only if not committed to current strategy)
+        if (strategyCommitmentTicks == 0 && minigame.isChestVisible() && !minigame.gotChest()) {
+            Strategy newStrategy = decideStrategy(bobberCenter, fishPos, barSize, fishProgress);
+
+            // Only change strategy if different from current
+            if (newStrategy != currentStrategy) {
+                if (SFConfig.isDebugMode()) {
+                    StardewFishing.LOGGER.info("[AUTO] Strategy change: {} -> {}", currentStrategy, newStrategy);
                 }
+                currentStrategy = newStrategy;
+                strategyCommitmentTicks = MIN_STRATEGY_COMMITMENT;
+            }
+        }
 
-                // Priority 4: If we're on the fish, try to get the chest
-                // No distance limit when on fish
-                if (minigame.isBobberOnFish() && fishProgress > 0.4f) {
-                    return chestCenter > bobberCenter;
-                }
+        // Execute current strategy
+        if (currentStrategy == Strategy.PURSUE_CHEST && minigame.isChestVisible() && !minigame.gotChest()) {
+            return executeChestPursuit(bobberCenter, fishPos, barSize);
+        } else {
+            return executeFishFollowing(bobberPos, fishPos, bobberCenter, barSize);
+        }
+    }
 
-                // Priority 5: If chest has some progress (>30%), maintain it
-                // Prevent losing partial chest progress
-                if (chestProgress > 0.3f) {
-                    return chestCenter > bobberCenter;
-                }
+    /**
+     * Decides which strategy to use based on current game state
+     * Uses cost-benefit analysis considering progress decay rates and movement time
+     */
+    private Strategy decideStrategy(double bobberCenter, double fishPos, int barSize, float fishProgress) {
+        // If no chest visible, always follow fish
+        if (!minigame.isChestVisible() || minigame.gotChest()) {
+            return Strategy.FOLLOW_FISH;
+        }
 
-                // Priority 6: If fish is idle or moving slowly with good progress
-                // Safe to chase chest anywhere
-                if (Math.abs(fishVelocity) < 0.5 && fishProgress > 0.5f) {
-                    return chestCenter > bobberCenter;
-                }
+        int chestPos = minigame.getChestPos();
+        float chestProgress = minigame.getChestProgress();
+        double bobberVelocity = minigame.getBobberVelocity();
+        double fishVelocity = minigame.getFishVelocity();
 
-                // Priority 7: If fish progress is medium (>50%) and predicted fish position is safe
-                // Chase chest aggressively
-                if (fishProgress > 0.5f && predictedDistToFish < barSize * 1.2) {
-                    return chestCenter > bobberCenter;
+        // Calculate distances
+        double distanceToFish = Math.abs(fishPos - bobberCenter);
+        double distanceToChest = Math.abs(chestPos - bobberCenter);
+
+        // Predict future positions
+        double predictedBobberCenter = bobberCenter + bobberVelocity * 2.5;
+        double predictedFishPos = fishPos + fishVelocity * 2.5;
+        double predictedDistToFish = Math.abs(predictedFishPos - predictedBobberCenter);
+
+        // CRITICAL: Estimate time to reach chest (rough estimate based on distance)
+        // Average bobber speed is around 0.7-1.5 pixels/tick
+        double estimatedTicksToChest = distanceToChest / 1.0;
+
+        // Calculate progress decay rates (from FishingMinigame.java)
+        float CHEST_DECAY_RATE = 0.25f; // Per tick when not on chest
+        float FISH_DECAY_RATE = 1.0f; // Approximate per tick when not on fish
+
+        // Calculate expected losses during chest pursuit
+        float expectedChestDecayIfIgnored = CHEST_DECAY_RATE * (float)estimatedTicksToChest;
+        float expectedFishLossDuringPursuit = FISH_DECAY_RATE * (float)estimatedTicksToChest / 120.0f; // Normalized to 0-1
+
+        // PRIORITY 1: Chest is almost done (>65%) - MUST finish or waste investment!
+        // This is sunk cost consideration: abandoning high-progress chest wastes previous effort
+        if (chestProgress > 0.65f && fishProgress > 0.25f) {
+            if (SFConfig.isDebugMode()) {
+                StardewFishing.LOGGER.info("[AUTO] High chest progress ({}), completing it!",
+                    String.format("%.2f", chestProgress));
+            }
+            return Strategy.PURSUE_CHEST;
+        }
+
+        // PRIORITY 2: Can cover both targets in trajectory (most efficient - no decay!)
+        boolean canCoverBoth = canCoverBothTargets(predictedBobberCenter, predictedFishPos,
+                                                    chestPos, barSize, bobberVelocity);
+        if (canCoverBoth && fishProgress > 0.3f) {
+            return Strategy.PURSUE_CHEST;
+        }
+
+        // PRIORITY 3: Currently on fish AND chest has some progress
+        // If we're already positioned well, go get it
+        if (minigame.isBobberOnFish() && chestProgress > 0.25f && fishProgress > 0.45f) {
+            return Strategy.PURSUE_CHEST;
+        }
+
+        // PRIORITY 4: High fish progress gives us safety margin
+        // With high fish progress, we can afford to pursue chest more aggressively
+        if (fishProgress > 0.7f && chestProgress > 0.15f && distanceToChest < 50) {
+            // Fish is very safe, go for chest
+            return Strategy.PURSUE_CHEST;
+        }
+
+        // PRIORITY 5: Medium fish progress, check if chest is reasonably close
+        if (fishProgress > 0.5f && distanceToChest < 40) {
+            // Fish is reasonably close or moving slowly
+            if (distanceToFish < barSize || Math.abs(fishVelocity) < 1.2) {
+                // Some chest progress justifies pursuit
+                if (chestProgress > 0.2f) {
+                    return Strategy.PURSUE_CHEST;
                 }
             }
         }
 
-        // Calculate current velocity estimate
+        // PRIORITY 6: New chest appears - try to get it early
+        // Early pursuit is efficient (shorter distance to travel)
+        if (chestProgress < 0.1f && fishProgress > 0.4f && distanceToChest < 35) {
+            if (SFConfig.isDebugMode()) {
+                StardewFishing.LOGGER.info("[AUTO] Early chest pursuit: dist={}, fishProg={}",
+                    String.format("%.1f", distanceToChest),
+                    String.format("%.2f", fishProgress));
+            }
+            return Strategy.PURSUE_CHEST;
+        }
+
+        // PRIORITY 7: Fish is idle/very slow - good opportunity
+        if (Math.abs(fishVelocity) < 0.5 && fishProgress > 0.5f && distanceToChest < 50) {
+            return Strategy.PURSUE_CHEST;
+        }
+
+        // PRIORITY 8: Moderate conditions, but chest is reasonably close
+        if (distanceToChest < 30 && fishProgress > 0.4f && chestProgress > 0.1f) {
+            // Close enough to try
+            boolean fishReasonablySafe = distanceToFish < barSize * 1.2 || Math.abs(fishVelocity) < 1.5;
+            if (fishReasonablySafe) {
+                return Strategy.PURSUE_CHEST;
+            }
+        }
+
+        // Default: Follow fish (conservative approach)
+        return Strategy.FOLLOW_FISH;
+    }
+
+    /**
+     * Execute chest pursuit strategy with intelligent path planning
+     * Tries to minimize fish progress loss while moving toward chest
+     */
+    private boolean executeChestPursuit(double bobberCenter, double fishPos, int barSize) {
+        double bobberPos = minigame.getBobberPos();
+        double bobberVelocity = minigame.getBobberVelocity();
+        int maxBobberHeight = 142 - barSize;
+
+        // Apply same boundary braking as fish following
+        double BRAKE_THRESHOLD_VELOCITY = -1.0;
+        double BOTTOM_BRAKE_DISTANCE = 15.0;
+        double TOP_BRAKE_DISTANCE = 15.0;
+
+        // Bottom boundary braking
+        if (bobberVelocity < BRAKE_THRESHOLD_VELOCITY && bobberPos < BOTTOM_BRAKE_DISTANCE) {
+            if (SFConfig.isDebugMode() && bobberPos < 5) {
+                StardewFishing.LOGGER.info("[AUTO] BRAKE! (Chest pursuit) Bottom approach: pos={}, vel={}",
+                    String.format("%.1f", bobberPos), String.format("%.2f", bobberVelocity));
+            }
+            return true; // Emergency brake
+        }
+
+        // Top boundary braking
+        if (bobberVelocity > 1.0 && bobberPos > maxBobberHeight - TOP_BRAKE_DISTANCE) {
+            if (SFConfig.isDebugMode() && bobberPos > maxBobberHeight - 5) {
+                StardewFishing.LOGGER.info("[AUTO] BRAKE! (Chest pursuit) Top approach: pos={}, vel={}",
+                    String.format("%.1f", bobberPos), String.format("%.2f", bobberVelocity));
+            }
+            return false; // Stop acceleration
+        }
+
+        // Intelligent chest pursuit: balance between reaching chest and staying near fish
+        int chestPos = minigame.getChestPos();
+        double chestCenter = chestPos;
+        double distanceToChest = Math.abs(chestCenter - bobberCenter);
+        double distanceToFish = Math.abs(fishPos - bobberCenter);
+        float chestProgress = minigame.getChestProgress();
+
+        // If chest progress is very high (>75%), go straight for it - almost done!
+        if (chestProgress > 0.75f) {
+            return chestCenter > bobberCenter;
+        }
+
+        // If chest is close (< 25 pixels), go directly
+        if (distanceToChest < 25) {
+            return chestCenter > bobberCenter;
+        }
+
+        // For medium distances (25-45 pixels), try to stay on fish if it's between us and chest
+        if (distanceToChest >= 25 && distanceToChest < 45 && distanceToFish < barSize * 1.3) {
+            // Check if fish is between us and chest
+            boolean fishBetweenUsAndChest = (chestCenter > bobberCenter && fishPos > bobberCenter && fishPos < chestCenter) ||
+                                            (chestCenter < bobberCenter && fishPos < bobberCenter && fishPos > chestCenter);
+
+            if (fishBetweenUsAndChest) {
+                // Follow fish toward chest (maintain progress while traveling)
+                double fishDistanceFromCenter = fishPos - bobberCenter;
+                double fishDeadZone = barSize * 0.25;
+
+                if (Math.abs(fishDistanceFromCenter) > fishDeadZone) {
+                    return fishPos > bobberCenter;
+                }
+            }
+        }
+
+        // Default: move directly toward chest
+        return chestCenter > bobberCenter;
+    }
+
+    /**
+     * Execute fish following strategy with predictive control and boundary braking
+     * Returns movement decision to keep fish in bobber bar
+     */
+    private boolean executeFishFollowing(double bobberPos, double fishPos, double bobberCenter, int barSize) {
+        // Get current velocity from minigame
+        double bobberVelocity = minigame.getBobberVelocity();
+        int maxBobberHeight = 142 - barSize;
+
+        // CRITICAL: Predictive braking near boundaries to prevent bounce
+        // When bobber is falling fast and approaching bottom, brake!
+        double BRAKE_THRESHOLD_VELOCITY = -1.0; // Fast downward velocity
+        double BOTTOM_BRAKE_DISTANCE = 15.0; // Distance from bottom to start braking
+        double TOP_BRAKE_DISTANCE = 15.0; // Distance from top to start braking
+
+        // Bottom boundary braking
+        if (bobberVelocity < BRAKE_THRESHOLD_VELOCITY && bobberPos < BOTTOM_BRAKE_DISTANCE) {
+            // Fast fall near bottom - EMERGENCY BRAKE!
+            if (SFConfig.isDebugMode() && bobberPos < 5) {
+                StardewFishing.LOGGER.info("[AUTO] BRAKE! Bottom approach: pos={}, vel={}",
+                    String.format("%.1f", bobberPos), String.format("%.2f", bobberVelocity));
+            }
+            return true; // Click to go up
+        }
+
+        // Top boundary braking
+        if (bobberVelocity > 1.0 && bobberPos > maxBobberHeight - TOP_BRAKE_DISTANCE) {
+            // Fast rise near top - STOP ACCELERATION!
+            if (SFConfig.isDebugMode() && bobberPos > maxBobberHeight - 5) {
+                StardewFishing.LOGGER.info("[AUTO] BRAKE! Top approach: pos={}, vel={}",
+                    String.format("%.1f", bobberPos), String.format("%.2f", bobberVelocity));
+            }
+            return false; // Stop clicking
+        }
+
+        // Calculate current velocity estimate for prediction
         double velocityEstimate = bobberPos - lastBobberVelocity;
         lastBobberVelocity = bobberPos;
 
@@ -580,101 +803,6 @@ public class FishingScreen extends Screen {
         return fishInRange && chestInRange && Math.abs(bobberVelocity) > 0.1;
     }
 
-    /**
-     * Determines if it's safe to chase the treasure chest without losing the fish
-     * Enhanced with velocity-based prediction
-     * Focus: Evaluate fish safety, not chest distance - chase chest anywhere if fish is safe
-     *
-     * @param bobberCenter Current center position of the bobber
-     * @param fishPos Current position of the fish
-     * @param chestCenter Position of the treasure chest
-     * @param barSize Size of the bobber bar
-     * @param fishProgress Current progress on catching the fish (0.0-1.0)
-     * @param distanceToFish Current distance from bobber center to fish
-     * @param distanceToChest Current distance from bobber center to chest
-     * @param predictedDistToFish Predicted distance from bobber to fish in next few ticks
-     * @param fishVelocity Current velocity of the fish
-     * @return true if it's safe to pursue the chest (fish won't escape)
-     */
-    private boolean isSafeToChaseChest(double bobberCenter, double fishPos, double chestCenter,
-                                        int barSize, float fishProgress,
-                                        double distanceToFish, double distanceToChest,
-                                        double predictedDistToFish, double fishVelocity) {
-        // Core principle: Focus on whether the FISH is safe, not on chest distance
-        // If fish won't escape, chase the chest anywhere
-
-        // If we're already very close to the fish, extremely safe
-        if (distanceToFish < barSize * 0.4) {
-            return true;
-        }
-
-        // If predicted distance shows we'll still be close to fish, very safe
-        if (predictedDistToFish < barSize * 0.6) {
-            return true;
-        }
-
-        // If fish is idle or barely moving, very safe - won't escape
-        if (Math.abs(fishVelocity) < 0.3) {
-            return true;
-        }
-
-        // If fish is moving slowly and we're reasonably positioned, safe
-        if (Math.abs(fishVelocity) < 0.8 && distanceToFish < barSize * 1.2) {
-            return true;
-        }
-
-        // If fish progress is very high (>80%), the fish won't escape easily
-        if (fishProgress > 0.8f) {
-            // Only reject if fish is moving extremely fast away AND predicted distance is bad
-            if (Math.abs(fishVelocity) > 4.0 && predictedDistToFish > barSize * 1.5) {
-                return false;
-            }
-            return true; // Otherwise safe to chase anywhere
-        }
-
-        // If fish progress is high (>70%), still quite safe
-        if (fishProgress > 0.7f) {
-            // Check if fish is moving away very rapidly
-            boolean fishMovingAwayFast = (fishVelocity > 3.0 && fishPos > bobberCenter) ||
-                                          (fishVelocity < -3.0 && fishPos < bobberCenter);
-            if (fishMovingAwayFast && predictedDistToFish > barSize * 1.2) {
-                return false;
-            }
-            return true; // Safe to chase
-        }
-
-        // If fish progress is medium-high (>60%), moderate safety
-        if (fishProgress > 0.6f) {
-            // Check if fish is moving away rapidly
-            boolean fishMovingAway = (fishVelocity > 2.5 && fishPos > bobberCenter) ||
-                                      (fishVelocity < -2.5 && fishPos < bobberCenter);
-            if (fishMovingAway && predictedDistToFish > barSize) {
-                return false;
-            }
-            return true; // Otherwise safe
-        }
-
-        // If fish progress is medium (>50%)
-        if (fishProgress > 0.5f) {
-            // More conservative - check velocity and predicted position
-            boolean fishMovingAway = (fishVelocity > 2.0 && fishPos > bobberCenter) ||
-                                      (fishVelocity < -2.0 && fishPos < bobberCenter);
-            if (fishMovingAway) {
-                return false;
-            }
-            // Fish not moving away, safe if predicted distance is reasonable
-            return predictedDistToFish < barSize * 1.5;
-        }
-
-        // If fish progress is low (<50%), need to be more conservative
-        if (fishProgress > 0.3f) {
-            // Only safe if fish is close or predicted to stay close
-            return distanceToFish < barSize * 0.7 || predictedDistToFish < barSize * 0.8;
-        }
-
-        // Very low progress - very conservative, prioritize building progress
-        return distanceToFish < barSize * 0.5 && predictedDistToFish < barSize * 0.6;
-    }
 
     public enum Status {
         HIT_TEXT, MINIGAME, SUCCESS, FAILURE, CHEST_OPENING
